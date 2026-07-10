@@ -1,0 +1,27 @@
+dataset: hai
+protocol_version: 2
+federation_type: shared_context_vertical
+shared_anchor_observations: true
+
+normal_split:
+  train_fraction: 0.80
+  guard_gap: 15
+
+test_policy:
+  use_complete_test_sequence: true
+  preserve_natural_anomaly_rate: true
+  shuffle: false
+
+window:
+  length: 16
+  stride: 4
+  label_mode: any
+
+clients:
+  - P1
+  - P2
+  - P4
+
+anchor:
+  process: P3
+

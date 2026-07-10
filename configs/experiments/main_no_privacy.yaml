@@ -1,0 +1,6 @@
+protocol: configs/protocols/hai_shared_context.yaml
+model: configs/models/fedhgf.yaml
+
+privacy:
+  enabled: false
+

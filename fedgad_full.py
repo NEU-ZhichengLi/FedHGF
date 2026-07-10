@@ -608,14 +608,14 @@ class FedGAD:
                 self.client_aux_corrs[k] = estimate_aux_correlation(
                     c["X_train"], cfg["n_anchor"],
                     C_g=cfg["C_g"], sigma_g=cfg["sigma_g"],
-                    use_dp=cfg["use_dp"], rng=self.rng,
+                    use_dp=False, rng=self.rng,
                     relation_value_weight=cfg.get("relation_value_weight", 0.5),
                 )
                 if cfg.get("use_data_driven_cross_block", False):
                     self.client_anchor_aux_corrs[k] = estimate_anchor_aux_correlation(
                         c["X_train"], cfg["n_anchor"],
                         C_g=cfg["C_g"], sigma_g=cfg["sigma_g"],
-                        use_dp=cfg["use_dp"], rng=self.rng,
+                        use_dp=False, rng=self.rng,
                         relation_value_weight=cfg.get("relation_value_weight", 0.5),
                     )
 

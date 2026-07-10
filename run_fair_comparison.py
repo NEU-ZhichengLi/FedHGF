@@ -3,7 +3,7 @@ FedHGF fair benchmark runner.
 
 Examples:
   python run_fair_comparison.py --dataset wadi --method fedhgf --seeds 42 --device cuda --w-fusion 0.20,0.55,0.25
-  python run_fair_comparison.py --dataset hai --method fedhgf --seeds 42,123,2024 --device cuda --w-fusion 0.40,0.30,0.30 --threshold-mode f1_rate_guard --lambda-c 0.005 --lambda-v 0.4
+  python run_fair_comparison.py --dataset hai --method fedhgf --seeds 42,123,2024 --device cuda --threshold-mode quantile
   python run_fair_comparison.py --list-datasets
   python run_fair_comparison.py --dataset batadal_small --info-only
 
@@ -79,7 +79,7 @@ def _oracle_threshold_f1(y_true, scores):
     return best_f1, prec, rec
 
 
-def pick_cal_f1_threshold(scores_cal: np.ndarray, y_cal: np.ndarray) -> float:
+def pick_quantile_threshold(scores_cal: np.ndarray) -> float:
     """Label-free paper protocol: fixed 95th percentile on calibration scores."""
     s = np.asarray(scores_cal, dtype=np.float32)
     return float(np.percentile(s, 95))
@@ -107,7 +107,7 @@ def _calibrated_eval(
         y_te  = c["y_test"]
         if s_cal is None or s_te is None:
             continue
-        tau  = pick_cal_f1_threshold(s_cal, c["y_cal"])
+        tau  = pick_quantile_threshold(s_cal)
         n    = min(len(s_te), len(y_te))
         pred = (s_te[:n] > tau).astype(np.int64)
         pred_dict[name] = pred
@@ -335,7 +335,6 @@ def run_fedhgf(
     seed: int, fedhgf_full: bool, device: str,
     w_fusion: tuple = None,
     threshold_mode: str = None,
-    target_anom_rate: float = None,
     fusion_mode: str = None,
     cfg_extra: dict = None,
     stage1_round_cb=None,
@@ -352,14 +351,12 @@ def run_fedhgf(
     cfg.update(spec.get("cfg_overrides", {}))
     if fedhgf_full:
         cfg.update(spec.get("cfg_overrides_full", {}))
-        cfg["use_label_assisted_fusion"] = True
+        cfg["use_label_assisted_fusion"] = False
 
     if w_fusion is not None:
         cfg["w_fusion"] = tuple(w_fusion)
     if threshold_mode is not None:
         cfg["adaptive_threshold_mode"] = threshold_mode
-    if target_anom_rate is not None:
-        cfg["target_anom_rate"] = target_anom_rate
     if fusion_mode is not None:
         cfg["fusion_mode"] = fusion_mode
     if cfg_extra:
@@ -861,7 +858,6 @@ def run_experiment(args):
                         fedhgf_full=args.fedhgf_full, device=args.device,
                         w_fusion=args.w_fusion,
                         threshold_mode=getattr(args, 'threshold_mode', None),
-                        target_anom_rate=getattr(args, 'target_anom_rate', None),
                         fusion_mode=getattr(args, 'fusion_mode', None),
                         cfg_extra=_cfg_extra if _cfg_extra else None,
                         fusion_candidates_extra=_fc_extra,
@@ -1016,11 +1012,8 @@ def main():
     ap.add_argument("--w-fusion-per-client", dest="w_fusion_per_client", type=str, default=None,
                     help="Per-client fusion weights, semicolon-separated, e.g. '0.7,0.2,0.1;0.5,0.3,0.2'")
     ap.add_argument("--threshold-mode", dest="threshold_mode", type=str, default=None,
-                    choices=["f1", "f1_guard", "f1_fpr_guard", "f1_rate_guard", "rate", "ratio",
-                             "quantile", "normal_percentile"],
-                    help="Override adaptive_threshold_mode (e.g. rate)")
-    ap.add_argument("--target-anom-rate", dest="target_anom_rate", type=float, default=None,
-                    help="Override target_anom_rate (e.g. 0.10 for rate mode)")
+                    choices=["quantile"],
+                    help="Override adaptive_threshold_mode for the canonical main run")
     ap.add_argument("--fusion-mode", dest="fusion_mode", type=str, default=None,
                     choices=["fixed", "calib_small", "calib_small_balanced"],
                     help="Override fusion_mode: fixed=global weights, calib_small=6-cand, calib_small_balanced=11-cand symmetric")

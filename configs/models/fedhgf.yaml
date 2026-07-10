@@ -1,0 +1,17 @@
+encoder:
+  type: npformer_gp
+  hidden_dim: 64
+  patch_length: 4
+  patch_stride: 2
+
+flow:
+  blocks: 4
+  hidden_dim: 128
+
+fusion:
+  weights: [0.333333, 0.333333, 0.333334]
+
+calibration:
+  method: quantile
+  alert_budget: 0.05
+
