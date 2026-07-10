@@ -7,6 +7,71 @@ from __future__ import annotations
 import numpy as np
 
 
+def count_windows(n_rows: int, window_len: int, stride: int) -> int:
+    if n_rows < window_len:
+        return 0
+    return (n_rows - window_len) // stride + 1
+
+
+def make_split_audit(
+    *,
+    dataset: str,
+    client_name: str,
+    window_len: int,
+    stride: int,
+    train_source,
+    train_rows,
+    cal_source,
+    cal_rows,
+    test_source,
+    test_rows,
+    label_mode: str,
+    anchor_semantics: str,
+) -> dict:
+    def _rows(pair):
+        start, end = int(pair[0]), int(pair[1])
+        return {
+            "row_start": start,
+            "row_end_exclusive": end,
+            "n_rows": max(0, end - start),
+        }
+
+    return {
+        "dataset": dataset,
+        "client_name": client_name,
+        "protocol": "chronological_pre_window_label_free",
+        "window_len": int(window_len),
+        "stride": int(stride),
+        "label_mode_for_final_metrics": label_mode,
+        "label_usage": {
+            "train_selection_uses_anomaly_labels": False,
+            "cal_selection_uses_anomaly_labels": False,
+            "test_selection_uses_anomaly_labels": False,
+            "threshold_selection_uses_cal_labels": False,
+            "labels_used_for_final_metrics_only": True,
+        },
+        "train": {
+            "source": train_source,
+            **_rows(train_rows),
+            "n_windows": count_windows(train_rows[1] - train_rows[0],
+                                       window_len, stride),
+        },
+        "cal": {
+            "source": cal_source,
+            **_rows(cal_rows),
+            "n_windows": count_windows(cal_rows[1] - cal_rows[0],
+                                       window_len, stride),
+        },
+        "test": {
+            "source": test_source,
+            **_rows(test_rows),
+            "n_windows": count_windows(test_rows[1] - test_rows[0],
+                                       window_len, stride),
+        },
+        "anchor_semantics": anchor_semantics,
+    }
+
+
 def normalize_client_data(client: dict) -> dict:
     """Per-node per-channel normalization using training split only."""
     X_tr = client["X_train"]

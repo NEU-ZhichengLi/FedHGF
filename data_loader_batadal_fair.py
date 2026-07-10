@@ -51,7 +51,7 @@ _here = Path(__file__).resolve().parent
 sys.path.insert(0, str(_here))
 if str(_here.parent / "New") not in sys.path:
     sys.path.append(str(_here.parent / "New"))
-from data_utils import normalize_client_data, validate_federation_clients
+from data_utils import make_split_audit, normalize_client_data, validate_federation_clients
 
                                                                              
        
@@ -200,6 +200,24 @@ def load_batadal_fair(
             "total_test_anom":   int(y_test.sum()),
             "is_sparse_anom":    int(y_test.sum()) < min_cal_anom,
             "split_protocol":    "paper_chronological_label_free",
+            "split_audit": make_split_audit(
+                dataset="batadal",
+                client_name=zone_name,
+                window_len=window_len,
+                stride=stride,
+                train_source="Data/BATADAL/BATADAL_dataset03.csv",
+                train_rows=(0, split),
+                cal_source="Data/BATADAL/BATADAL_dataset03.csv",
+                cal_rows=(split, len(X_tr)),
+                test_source="Data/BATADAL/BATADAL_dataset04.csv",
+                test_rows=(0, len(X_vl)),
+                label_mode=label_mode,
+                anchor_semantics=(
+                    "replicated_public_state: all BATADAL clients receive the "
+                    "same L_T1-L_T7 tank-level anchor streams from the single "
+                    "water-network benchmark"
+                ),
+            ),
         }
         clients.append(normalize_client_data(client))
 

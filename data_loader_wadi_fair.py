@@ -58,7 +58,7 @@ _here = Path(__file__).resolve().parent
 sys.path.insert(0, str(_here))
 if str(_here.parent / "New") not in sys.path:
     sys.path.append(str(_here.parent / "New"))
-from data_utils import normalize_client_data, validate_federation_clients
+from data_utils import make_split_audit, normalize_client_data, validate_federation_clients
 
                                                                              
         
@@ -330,6 +330,24 @@ def load_wadi_fair(
             "total_test_anom":   int(y_test.sum()),
             "is_sparse_anom":    int(y_test.sum()) < min_cal_anom,
             "split_protocol":    "paper_chronological_label_free",
+            "split_audit": make_split_audit(
+                dataset="wadi",
+                client_name=zone_name,
+                window_len=window_len,
+                stride=stride,
+                train_source="Data/WADI/WADI_14days_new.csv",
+                train_rows=(0, split),
+                cal_source="Data/WADI/WADI_14days_new.csv",
+                cal_rows=(split, len(X_norm_full)),
+                test_source="Data/WADI/WADI_attackdataLABLE.csv",
+                test_rows=(0, len(X_atk_full)),
+                label_mode=label_mode,
+                anchor_semantics=(
+                    "replicated_public_state: all WADI clients receive the "
+                    "same zone3 public-state anchor streams from the centralized "
+                    "testbed"
+                ),
+            ),
         }
         clients.append(normalize_client_data(client))
 

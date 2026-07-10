@@ -53,7 +53,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from data_utils import normalize_client_data, validate_federation_clients
+from data_utils import make_split_audit, normalize_client_data, validate_federation_clients
 
                                                                           
 
@@ -244,6 +244,24 @@ def load_hai_federation(
             "total_test_anom":   int(y_test.sum()),
             "is_sparse_anom":    int(y_test.sum()) < 20,
             "split_protocol":    "paper_chronological_label_free",
+            "split_audit": make_split_audit(
+                dataset="hai",
+                client_name=proc,
+                window_len=window_len,
+                stride=stride,
+                train_source=[str(Path(p).name) for p in train_paths],
+                train_rows=(0, split),
+                cal_source=[str(Path(p).name) for p in train_paths],
+                cal_rows=(split, len(X_tr_raw)),
+                test_source=[str(Path(p).name) for p in test_paths],
+                test_rows=(0, len(X_te_raw)),
+                label_mode=label_mode,
+                anchor_semantics=(
+                    "replicated_public_state: P3 is copied as the common "
+                    "water-tank anchor context for P1/P2/P4 clients in the "
+                    "single HAI testbed"
+                ),
+            ),
         }
         clients.append(normalize_client_data(client))
 

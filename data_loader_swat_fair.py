@@ -42,7 +42,7 @@ _here = Path(__file__).resolve().parent
 sys.path.insert(0, str(_here))
 if str(_here.parent / "New") not in sys.path:
     sys.path.append(str(_here.parent / "New"))
-from data_utils import normalize_client_data, validate_federation_clients
+from data_utils import make_split_audit, normalize_client_data, validate_federation_clients
 
                                                                              
        
@@ -234,6 +234,24 @@ def load_swat_fair(
             "total_test_anom":   int(y_test.sum()),
             "is_sparse_anom":    int(y_test.sum()) < 20,
             "split_protocol":    "paper_chronological_label_free",
+            "split_audit": make_split_audit(
+                dataset="swat",
+                client_name=spec.client_name,
+                window_len=window_len,
+                stride=stride,
+                train_source="Data/SWAT/normal.csv",
+                train_rows=(0, split),
+                cal_source="Data/SWAT/normal.csv",
+                cal_rows=(split, len(X_norm_all)),
+                test_source="Data/SWAT/attack.csv",
+                test_rows=(0, len(X_atk_all)),
+                label_mode="any",
+                anchor_semantics=(
+                    "replicated_public_scada_context: all clients receive the "
+                    "same FIT101-FIT601 public context, not independent "
+                    "same-semantics factory sensors"
+                ),
+            ),
         }
         clients.append(normalize_client_data(client))
         print(f"  {spec.client_name}: local_FIT={spec.local_fit}, "
