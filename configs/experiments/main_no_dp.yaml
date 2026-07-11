@@ -3,4 +3,4 @@ model: configs/models/fedhgf.yaml
 
 privacy:
   enabled: false
-
+  secure_aggregation_backend: assumed

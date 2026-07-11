@@ -31,6 +31,14 @@ class PlainAggregator:
 
 
 class DPSimulatedAggregator:
+    """Simulated DP release for server-visible client messages.
+
+    This backend clips and noises the payload before weighted aggregation. It is
+    not secure aggregation; it models only the DP release seen by the server.
+    """
+
+    backend = "dp_simulator"
+
     def __init__(
         self,
         clip_norm: float,
@@ -65,3 +73,16 @@ class DPSimulatedAggregator:
             ))
         return PlainAggregator().aggregate(noised)
 
+
+class AssumedSecAggAggregator:
+    """Secure-aggregation boundary marker.
+
+    This repository does not implement cryptographic secure aggregation. The
+    class performs ordinary weighted aggregation while making the experiment
+    backend explicit as an assumption/simulator.
+    """
+
+    backend = "assumed"
+
+    def aggregate(self, messages: list[ClientMessage]) -> torch.Tensor:
+        return PlainAggregator().aggregate(messages)

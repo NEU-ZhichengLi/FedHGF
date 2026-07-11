@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import gzip
 import inspect
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
+import torch
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from fedgad_full import FedGAD
 from src.fedhgf.calibration import QuantileCalibrator
 from src.fedhgf.data.normalization import TrainOnlyStandardizer
+from src.fedhgf.data.protocol_builder import build_hai_shared_context_protocol, to_model_clients
 from src.fedhgf.data.schema import (
     ClientFeatures,
     ClientSpec,
@@ -29,6 +35,7 @@ from src.fedhgf.data.windowing import (
     windowize_labels_for_evaluation,
     windowize_segment,
 )
+from src.fedhgf.federation import AssumedSecAggAggregator, ClientMessage, DPSimulatedAggregator, PlainAggregator
 
 
 def test_window_does_not_cross_split_boundary():
@@ -156,6 +163,104 @@ def test_model_facing_features_do_not_carry_labels():
         label_mode="any",
     )
     validate_model_features_are_label_free(fed)
+
+
+def _write_hai_fixture(root: Path, test_attack: np.ndarray) -> None:
+    n_train = 24
+    n_test = len(test_attack)
+    train = pd.DataFrame({
+        "time": np.arange(n_train),
+        "attack": np.zeros(n_train, dtype=int),
+        "attack_P1": np.zeros(n_train, dtype=int),
+        "attack_P2": np.zeros(n_train, dtype=int),
+        "attack_P3": np.zeros(n_train, dtype=int),
+        "P3_A": np.arange(n_train, dtype=float),
+        "P1_A": np.arange(n_train, dtype=float) + 10,
+        "P2_A": np.arange(n_train, dtype=float) + 20,
+        "P4_A": np.arange(n_train, dtype=float) + 40,
+    })
+    test = pd.DataFrame({
+        "time": np.arange(n_test),
+        "attack": test_attack.astype(int),
+        "attack_P1": test_attack.astype(int),
+        "attack_P2": test_attack.astype(int),
+        "attack_P3": test_attack.astype(int),
+        "P3_A": np.arange(n_test, dtype=float),
+        "P1_A": np.arange(n_test, dtype=float) + 10,
+        "P2_A": np.arange(n_test, dtype=float) + 20,
+        "P4_A": np.arange(n_test, dtype=float) + 40,
+    })
+    train.to_csv(root / "train1.csv.gz", index=False, compression="gzip")
+    test.to_csv(root / "test1.csv.gz", index=False, compression="gzip")
+
+
+def _model_snapshot(model_clients: list[dict]) -> tuple:
+    return tuple(
+        (
+            client["client_name"],
+            tuple(client["feature_names"]),
+            client["X_train"].shape,
+            client["X_cal"].shape,
+            client["X_test"].shape,
+            float(client["X_train"].sum()),
+            float(client["X_cal"].sum()),
+            float(client["X_test"].sum()),
+        )
+        for client in model_clients
+    )
+
+
+def test_no_label_used_in_protocol_builder():
+    with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+        labels_a = np.array([0, 1, 0, 0, 1, 0, 0, 1], dtype=np.int64)
+        labels_b = np.zeros_like(labels_a)
+        _write_hai_fixture(Path(a), labels_a)
+        _write_hai_fixture(Path(b), labels_b)
+        fed_a = build_hai_shared_context_protocol(a, window_length=4, stride=2, guard_gap=3, max_train_rows=None)
+        fed_b = build_hai_shared_context_protocol(b, window_length=4, stride=2, guard_gap=3, max_train_rows=None)
+        clients_a, _, _ = to_model_clients(fed_a)
+        clients_b, _, _ = to_model_clients(fed_b)
+        assert _model_snapshot(clients_a) == _model_snapshot(clients_b)
+        assert any(label.test_y.sum() > 0 for label in fed_a.labels.values())
+        assert all(label.test_y.sum() == 0 for label in fed_b.labels.values())
+
+
+def test_fedgad_score_contract_has_no_labels_or_thresholds():
+    model = FedGAD(n_anchor=1, device="cpu")
+    model._branch_scores = lambda k, c, split, center_np=None: (
+        np.array([0.0, 1.0], dtype=np.float32),
+        np.array([1.0, 2.0], dtype=np.float32),
+        np.array([2.0, 3.0], dtype=np.float32),
+    )
+    model.client_cal = {0: {
+        "s1": np.array([0.0, 1.0], dtype=np.float32),
+        "s2": np.array([1.0, 2.0], dtype=np.float32),
+        "s3": np.array([2.0, 3.0], dtype=np.float32),
+    }}
+    model.client_fusion_weights = {0: (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)}
+    out = model.score([{"client_name": "P1"}], split="test")[0]
+    assert "score" in out and "evidence" in out
+    assert "y_true" not in out and "y_pred" not in out and "tau" not in out
+
+
+def test_dp_aggregator_is_simulated_and_records_server_visible_event():
+    messages = [
+        ClientMessage("c1", 1, "encoder", torch.ones(2), 2),
+        ClientMessage("c2", 1, "encoder", torch.zeros(2), 2),
+    ]
+    plain = PlainAggregator().aggregate(messages)
+    assert torch.allclose(plain, torch.tensor([0.5, 0.5]))
+
+    dp = DPSimulatedAggregator(clip_norm=1.0, noise_multiplier=0.0)
+    out = dp.aggregate(messages)
+    assert len(dp.accountant.events) == 1
+    assert dp.accountant.events[0].channel == "encoder"
+    assert dp.backend == "dp_simulator"
+    assert out.shape == plain.shape
+
+    assumed = AssumedSecAggAggregator()
+    assert assumed.backend == "assumed"
+    assert torch.allclose(assumed.aggregate(messages), plain)
 
 
 if __name__ == "__main__":

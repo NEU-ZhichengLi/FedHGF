@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from sklearn.metrics import f1_score
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 from modules import (MAF, TemporalGraphEncoder, NPFormerGPEncoder,
@@ -408,10 +407,6 @@ class FedGAD:
         use_calibration: bool  = True,
         score_mode:      str   = "both",
         eta_s:           float = 1.0,
-        adaptive_threshold_mode:  str = "quantile",
-        adaptive_threshold_grid:  int = 99,
-        ratio_clip: Tuple[float, float] = (0.01, 0.45),
-        use_label_assisted_fusion: bool  = False,
         collapse_patience: int   = 2,
         collapse_std_thr:  float = 0.01,
         use_graph_residual:    bool  = True,
@@ -423,24 +418,12 @@ class FedGAD:
         lambda_c:   float = 1.0,
         use_data_driven_cross_block: bool  = False,
         track_convergence:     bool  = False,
-        track_full_convergence: bool  = False,
-        threshold_ratio_hint:  float = None,
         hybrid_center_alpha:   float = 0.0,
         adaptive_hybrid_alpha: bool  = False,
-        target_anom_rate:      float = 0.15,
-        pred_rate_low:         float = 0.05,
-        pred_rate_high:        float = 0.25,
-        fusion_grid:           list  = None,
-        normal_fpr_max:        float = 0.05,
         use_prediction_loss:   bool  = False,
         lambda_pred:           float = 1.0,
         center_score_mode:     str   = "local",
         center_hybrid_beta:    float = 0.5,                                             
-        fusion_mode:           str   = "fixed",                             
-        fusion_small_candidates: list = None,                                             
-        fusion_p_grid:         list  = None,                                      
-        fusion_search_beta:    float = 1.0,                                                                        
-        score_orient:          str   = "none",                            
                                                                        
                                                                            
         encoder_type: str = "npformer_gp",                          
@@ -451,7 +434,6 @@ class FedGAD:
         tf_heads:     int = 4,
         tf_ffn:       int = 128,
         tf_dropout:   float = 0.1,
-        w_fusion_per_client: list = None,
         graph_in_encoder: bool = None,
         relation_value_weight: float = 0.5,
         device: str = "cuda",
@@ -472,7 +454,6 @@ class FedGAD:
 
         self.client_flows:          Dict[int, MAF]                         = {}
         self.client_cal:            Dict[int, Dict[str, np.ndarray]]       = {}
-        self.client_thresholds:     Dict[int, float]                       = {}
         self.client_fusion_weights: Dict[int, Tuple]                       = {}
         self.client_graphs:         List[Tuple[torch.Tensor, torch.Tensor]] = []
         self.client_signed_graphs:  List[torch.Tensor] = []
@@ -480,8 +461,6 @@ class FedGAD:
         self.client_anchor_aux_corrs:  Dict[int, Optional[np.ndarray]]             = {}
         self.client_local_centers:     Dict[int, np.ndarray]                        = {}
         self.client_alpha_ks:          Dict[int, float]                              = {}
-        self.client_cal_info:          Dict[int, dict]                               = {}
-        self.client_score_orient:      Dict[int, dict]                               = {}
         self.round_history:            List[dict]                                   = []
         self._stage1_checkpoints:       List[dict]                                   = []
 
@@ -690,9 +669,6 @@ class FedGAD:
                     )
                     self.client_local_centers[k] = Z_tr.detach().cpu().numpy().mean(axis=0)
 
-        if cfg.get("track_full_convergence", False) and self._stage1_checkpoints:
-            self._eval_full_per_round(clients)
-
         if cfg["use_flow"] and cfg["score_mode"] != "center_only":
             t1 = time.time()
             if cfg.get("flow_mode", "local") == "global":
@@ -882,27 +858,12 @@ class FedGAD:
                 else:
                     print(f"    [R{r+1:02d}] center_loss={_avg_c:.4f}")
 
-                                            
-            if cfg.get("track_full_convergence", False):
-                self._stage1_checkpoints.append({
-                    "round":  r + 1,
-                    "encoder_state": copy.deepcopy(self.encoder.state_dict()),
-                    "center":        self.center.detach().clone(),
-                })
-
-                       
             if cfg.get("track_convergence", False):
-                from sklearn.metrics import (roc_auc_score as _roc,
-                                             average_precision_score as _ap)
-                round_aurocs = []
-                round_auprcs = []
                 round_cdists = []
                 center_np = self.center.detach().cpu().numpy()
                 self.encoder.eval()
                 with torch.no_grad():
                     for k, c in enumerate(clients):
-                        if "y_test" not in c or int(c["y_test"].sum()) == 0:
-                            continue
                         _, A_hat_k = self.client_graphs[k]
                         Z_test, _  = self._encode_dataset(
                             c["X_test"], self.encoder, A_hat_k,
@@ -910,25 +871,13 @@ class FedGAD:
                         )
                         Z_np = Z_test.cpu().numpy()
                         s1   = np.sum((Z_np - center_np) ** 2, axis=1)
-                        cdist = np.sqrt(s1).mean()
-                        try:
-                            auroc = _roc(c["y_test"], s1)
-                            auprc = _ap(c["y_test"], s1)
-                        except ValueError:
-                            continue
-                        round_aurocs.append(float(auroc))
-                        round_auprcs.append(float(auprc))
-                        round_cdists.append(float(cdist))
-                if round_aurocs:
+                        round_cdists.append(float(np.sqrt(s1).mean()))
+                if round_cdists:
                     self.round_history.append({
                         "round":            r + 1,
-                        "auroc_mean":       float(np.nanmean(round_aurocs)),
-                        "auroc_std":        float(np.nanstd(round_aurocs)),
-                        "auprc_mean":       float(np.nanmean(round_auprcs)),
-                        "auprc_std":        float(np.nanstd(round_auprcs)),
                         "center_dist_mean": float(np.nanmean(round_cdists)),
                         "center_dist_std":  float(np.nanstd(round_cdists)),
-                        "n_clients":        len(round_aurocs),
+                        "n_clients":        len(round_cdists),
                     })
 
             with torch.no_grad():
@@ -948,73 +897,6 @@ class FedGAD:
                     break
             else:
                 collapse_count = 0
-
-                                                                        
-    def _eval_full_per_round(self, clients: List[dict]) -> None:
-        """
-        For each saved Stage-I checkpoint: run Stage-II + calibrate + predict
-        to get the full-model AUROC at that round.
-        Results are appended to round_history with stage="I_full".
-        """
-        from sklearn.metrics import roc_auc_score as _roc, f1_score as _f1
-        cfg = self.cfg
-                                                               
-        final_enc_state = copy.deepcopy(self.encoder.state_dict())
-        final_center    = self.center.detach().clone()
-        final_flows     = self.client_flows
-        final_cal       = self.client_cal
-        final_thr       = self.client_thresholds
-        final_fw        = self.client_fusion_weights
-        final_lc        = self.client_local_centers
-        final_ak        = self.client_alpha_ks
-
-        print(f"    [Full-convergence] evaluating {len(self._stage1_checkpoints)} checkpoints ...")
-        for ckpt in self._stage1_checkpoints:
-            r = ckpt["round"]
-                                                          
-            self.encoder.load_state_dict(ckpt["encoder_state"])
-            self.center = ckpt["center"].to(self.device)
-            self.client_flows = {}
-
-                                                                   
-            if cfg["use_flow"] and cfg["score_mode"] != "center_only":
-                self._stage2(clients)
-            self._calibrate(clients)
-
-                      
-            results   = self.predict(clients)
-            aurocs, f1s = [], []
-            for res in results:
-                yt, yp, sc = res["y_true"], res["y_pred"], res["score"]
-                if int(yt.sum()) == 0:
-                    continue
-                try:
-                    aurocs.append(float(_roc(yt, sc)))
-                    f1s.append(float(_f1(yt, yp, zero_division=0)))
-                except ValueError:
-                    pass
-
-            if aurocs:
-                self.round_history.append({
-                    "round":        r,
-                    "total_rounds": cfg["n_rounds"],
-                    "auroc":        float(np.nanmean(aurocs)),
-                    "f1":           float(np.nanmean(f1s)),
-                    "loss":         float("nan"),
-                    "stage":        "I_full",
-                })
-                print(f"      Round {r:2d}/full  AUROC={aurocs[0] if len(aurocs)==1 else float(np.nanmean(aurocs)):.4f}")
-
-                             
-        self.encoder.load_state_dict(final_enc_state)
-        self.center              = final_center.to(self.device)
-        self.client_flows        = final_flows
-        self.client_cal          = final_cal
-        self.client_thresholds   = final_thr
-        self.client_fusion_weights = final_fw
-        self.client_local_centers  = final_lc
-        self.client_alpha_ks       = final_ak
-        print(f"    [Full-convergence] done.")
 
                                                                         
     def _stage2(self, clients: List[dict]):
@@ -1049,7 +931,7 @@ class FedGAD:
 
                                                                         
     def _stage2_global(self, clients: List[dict]):
-        """Train ONE shared flow on ALL clients' embeddings (Global-Flow baseline)."""
+        """Train one shared flow on all clients' embeddings."""
         cfg = self.cfg
         self.encoder.eval()
         all_Z = []
@@ -1158,163 +1040,14 @@ class FedGAD:
                 w1, w2 = w1 / s, w2 / s
             return w1 * e1 + w2 * e2
 
-    def _find_best_fusion_weight(self, e1_cal, e2_cal, y_cal, e3_cal=None):
-        """
-        Joint search over a small predefined fusion_grid and threshold quantiles,
-        maximising calibration F1 with optional pred-rate guard.
-        Returns (best_w tuple, best_tau float, best_f1 float).
-        """
-        _FALLBACK_W = self.cfg.get("w_fusion", (0.15, 0.60, 0.25))
-        if len(np.unique(y_cal)) < 2 or int(np.asarray(y_cal).sum()) == 0:
-            return _FALLBACK_W, None, 0.0
-        from sklearn.metrics import f1_score as _f1s
-
-        _DEFAULT_GRID = [
-            (0.05, 0.70, 0.25),
-            (0.10, 0.65, 0.25),
-            (0.15, 0.60, 0.25),
-            (0.20, 0.55, 0.25),
-            (0.25, 0.50, 0.25),
-            (0.30, 0.45, 0.25),
-            (0.10, 0.75, 0.15),
-            (0.15, 0.70, 0.15),
-            (0.20, 0.65, 0.15),
-            (0.10, 0.50, 0.40),
-            (0.15, 0.50, 0.35),
-            (0.20, 0.45, 0.35),
-            (0.33, 0.34, 0.33),
-        ]
-        grid     = self.cfg.get("fusion_grid", None) or _DEFAULT_GRID
-        pred_low  = float(self.cfg.get("pred_rate_low",  0.05))
-        pred_high = float(self.cfg.get("pred_rate_high", 0.25))
-        guard_on  = self.cfg.get("adaptive_threshold_mode", "f1") == "f1_guard"
-        n_q       = int(self.cfg.get("adaptive_threshold_grid", 99))
-        qs        = np.linspace(0.01, 0.99, n_q)
-
-        best_f1, best_w, best_tau = -1.0, None, None
-
-        def _sweep(guard):
-            nonlocal best_f1, best_w, best_tau
-            for raw_w in grid:
-                w = np.asarray(raw_w, dtype=np.float32)
-                s = w.sum()
-                if s > 0:
-                    w = w / s
-                w1 = float(w[0])
-                w2 = float(w[1])
-                w3 = float(w[2]) if len(w) > 2 else 0.0
-                E  = (w1 * e1_cal + w2 * e2_cal
-                      + (w3 * e3_cal if e3_cal is not None else 0.0))
-                for q in qs:
-                    tau = float(np.quantile(E, q))
-                    yp  = (E > tau).astype(np.int64)
-                    if guard:
-                        pr = float(yp.mean())
-                        if pr < pred_low or pr > pred_high:
-                            continue
-                    f1  = float(_f1s(y_cal, yp, zero_division=0))
-                    if f1 > best_f1:
-                        best_f1  = f1
-                        best_w   = (w1, w2, w3)
-                        best_tau = tau
-
-        _sweep(guard=guard_on)
-        if best_w is None:                                                     
-            _sweep(guard=False)
-        return best_w, best_tau, float(best_f1)
-
-    def _pick_threshold(self, E_cal, y_cal):
-        cfg    = self.cfg
-        mode   = cfg.get("adaptive_threshold_mode", "f1")
-        E_cal  = np.asarray(E_cal,  dtype=np.float32)
-        y_cal  = np.asarray(y_cal,  dtype=np.int64)
-        alpha  = float(cfg.get("alpha", 0.05))
-        fallback = float(np.quantile(E_cal, 1.0 - alpha))
-
-                                                                
-        if len(np.unique(y_cal)) < 2 or int(y_cal.sum()) == 0:
-            return fallback
-
-        if mode == "quantile":
-            return fallback
-        if mode == "rate":
-            target = float(cfg.get("target_anom_rate", 0.10))
-            return float(np.quantile(E_cal, 1.0 - target))
-        if mode == "ratio":
-            hint   = cfg.get("threshold_ratio_hint")
-            ratio  = float(hint) if hint is not None else float(np.mean(y_cal))
-            lo, hi = cfg["ratio_clip"]
-            ratio  = min(max(ratio, lo), hi)
-            return float(np.quantile(E_cal, 1.0 - ratio))
-        if mode == "normal_percentile":
-            target_fpr = float(cfg.get("threshold_ratio_hint") or 0.05)
-            E_normal = E_cal[y_cal == 0]
-            if len(E_normal) < 10:
-                return fallback
-            return float(np.quantile(E_normal, 1.0 - target_fpr))
-
-                                                              
-        target_rate = float(cfg.get("target_anom_rate", float(y_cal.mean())))
-        n_grid      = int(cfg.get("adaptive_threshold_grid", 99))
-
-        best_tau, best_f1 = fallback, -1.0
-
-        if mode in ("f1", "f1_fpr_guard", "f1_rate_guard"):
-                                                   
-            for q in np.linspace(0.01, 0.99, n_grid):
-                tau = float(np.quantile(E_cal, q))
-                yp  = (E_cal > tau).astype(np.int64)
-                f1v = f1_score(y_cal, yp, zero_division=0)
-                if f1v > best_f1:
-                    best_f1, best_tau = f1v, tau
-
-            if mode == "f1_fpr_guard":
-                                                                        
-                normal_scores = E_cal[y_cal == 0]
-                fpr_max = float(cfg.get("normal_fpr_max", 0.05))
-                if len(normal_scores) >= 10:
-                    tau_fpr = float(np.quantile(normal_scores, 1.0 - fpr_max))
-                    best_tau = max(best_tau, tau_fpr)
-
-            elif mode == "f1_rate_guard":
-                                                                               
-                tau_rate = float(np.quantile(E_cal, 1.0 - target_rate))
-                best_tau = max(best_tau, tau_rate)
-
-        else:                                        
-            pred_low  = float(cfg.get("pred_rate_low",  0.5 * target_rate))
-            pred_high = float(cfg.get("pred_rate_high", 1.5 * target_rate))
-            for q in np.linspace(0.01, 0.99, n_grid):
-                tau = float(np.quantile(E_cal, q))
-                yp  = (E_cal > tau).astype(np.int64)
-                pr  = float(yp.mean())
-                if pr < pred_low or pr > pred_high:
-                    continue
-                f1v = f1_score(y_cal, yp, zero_division=0)
-                if f1v > best_f1:
-                    best_f1, best_tau = f1v, tau
-                                                         
-            if best_f1 < 0:
-                for q in np.linspace(0.01, 0.99, n_grid):
-                    tau = float(np.quantile(E_cal, q))
-                    yp  = (E_cal > tau).astype(np.int64)
-                    f1v = f1_score(y_cal, yp, zero_division=0)
-                    if f1v > best_f1:
-                        best_f1, best_tau = f1v, tau
-
-        return best_tau
-
     def _calibrate(self, clients: List[dict]):
-        cfg       = self.cfg
+        cfg = self.cfg
         center_np = self.center.detach().cpu().numpy()
-        self.client_cal            = {}
-        self.client_thresholds     = {}
+        self.client_cal = {}
         self.client_fusion_weights = {}
-        self.client_local_centers  = {}
-        self.client_alpha_ks       = {}
-        self.client_cal_info       = {}
+        self.client_local_centers = {}
+        self.client_alpha_ks = {}
 
-                                                                     
         cmode = cfg.get("center_score_mode", "global")
         if cmode != "global":
             self.encoder.eval()
@@ -1329,9 +1062,9 @@ class FedGAD:
 
         alpha_h = cfg.get("hybrid_center_alpha", 0.0)
         if alpha_h > 0 and cfg.get("adaptive_hybrid_alpha", False):
-            n_anc     = cfg["n_anchor"]
+            n_anc = cfg["n_anchor"]
             densities = [n_anc / max(ci["X_cal"].shape[2], 1) for ci in clients]
-            mean_d    = sum(densities) / max(len(densities), 1)
+            mean_d = sum(densities) / max(len(densities), 1)
             self.client_alpha_ks = {
                 k: float(np.clip(alpha_h * d / mean_d, 0.1, 0.9))
                 for k, d in enumerate(densities)
@@ -1340,252 +1073,68 @@ class FedGAD:
             self.client_alpha_ks = {k: alpha_h for k in range(len(clients))}
 
         for k, c in enumerate(clients):
-            _, A_hat = self.client_graphs[k]
-            Z_cal, _ = self._encode_dataset(
-                c["X_cal"], self.encoder, A_hat,
-                cfg["n_anchor"], cfg["graph_in_encoder"], cfg["batch_size"]
-            )
-            Z_cal_np = Z_cal.detach().cpu().numpy()
-            cmode = cfg.get("center_score_mode", "global")
-            c_k  = self.client_local_centers.get(k)
-            if cmode == "local" and c_k is not None:
-                s1 = ((Z_cal_np - c_k) ** 2).sum(axis=1).astype(np.float32)
-            elif cmode == "hybrid" and c_k is not None:
-                beta = float(cfg.get("center_hybrid_beta", 0.5))
-                s1 = (beta       * ((Z_cal_np - center_np) ** 2).sum(axis=1)
-                      + (1-beta) * ((Z_cal_np - c_k)        ** 2).sum(axis=1)
-                      ).astype(np.float32)
-            else:
-                s1 = ((Z_cal_np - center_np) ** 2).sum(axis=1).astype(np.float32)
-            s2 = self._flow_scores(k, Z_cal)
-
-            s3 = None
-            if cfg["use_graph_residual"] and cfg["use_graph"]:
-                s3 = self._compute_graph_residual_score(
-                    c["X_cal"], self.client_signed_graphs[k])
-
+            s1, s2, s3 = self._branch_scores(k, c, split="calibration", center_np=center_np)
             self.client_cal[k] = {"s1": s1, "s2": s2, "s3": s3}
+            self.client_fusion_weights[k] = tuple(cfg.get("w_fusion", (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)))
 
-                                                                              
-            if cfg.get("score_orient") == "calib_auc":
-                from sklearn.metrics import roc_auc_score as _auc
-                y_cal_k_o = np.asarray(c.get("y_cal", []), dtype=np.int64)
-                if len(np.unique(y_cal_k_o)) >= 2:
-                    flip1 = float(_auc(y_cal_k_o, s1)) < 0.5
-                    flip2 = float(_auc(y_cal_k_o, s2)) < 0.5
-                    flip3 = ((float(_auc(y_cal_k_o, s3)) < 0.5)
-                             if s3 is not None else False)
-                else:
-                    flip1 = flip2 = flip3 = False
-                self.client_score_orient[k] = {
-                    "flip1": flip1, "flip2": flip2, "flip3": flip3}
-                if flip1: s1 = -s1
-                if flip2: s2 = -s2
-                if flip3 and s3 is not None: s3 = -s3
-                                                              
-                self.client_cal[k] = {"s1": s1, "s2": s2, "s3": s3}
-                _cname_o = c.get("client_name", f"client{k}")
-                print(f"    [ScoreOrient/{_cname_o}] "
-                      f"flip_s1={flip1}  flip_s2={flip2}  flip_s3={flip3}")
-                                                                               
+    def _branch_scores(
+        self,
+        k: int,
+        client: dict,
+        split: str,
+        center_np: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        cfg = self.cfg
+        if split == "train":
+            key = "X_train"
+        elif split in ("cal", "calibration"):
+            key = "X_cal"
+        elif split == "test":
+            key = "X_test"
+        else:
+            raise ValueError(f"unknown split: {split!r}")
 
-            if (cfg["use_label_assisted_fusion"] and cfg["use_calibration"]
-                    and cfg["score_mode"] == "both" and cfg["use_flow"]):
-                e1_cal = np.asarray([self._tail_evi(v, s1) for v in s1],
-                                    dtype=np.float32)
-                e2_cal = np.asarray([self._tail_evi(v, s2) for v in s2],
-                                    dtype=np.float32)
-                e3_cal = (
-                    np.asarray([self._tail_evi(v, s3) for v in s3],
-                               dtype=np.float32)
-                    if s3 is not None else None
-                )
-                best_w, best_tau, best_f1 = self._find_best_fusion_weight(
-                    e1_cal, e2_cal, c["y_cal"], e3_cal=e3_cal)
-                self.client_fusion_weights[k] = best_w
-                if best_tau is None:
-                    best_tau = self._pick_threshold(
-                        self._compute_evidence(s1, s2, s3, k), c["y_cal"])
-                self.client_thresholds[k] = best_tau
-                self.client_cal_info[k] = {
-                    "selected_w":   best_w,
-                    "selected_tau": best_tau,
-                    "cal_f1":       best_f1,
-                }
-            elif (cfg.get("fusion_mode", "fixed") in ("calib_small", "calib_small_balanced")
-                  and cfg["use_calibration"] and cfg["use_flow"]):
-                                                                                          
-                                                                 
-                                                                                       
-                _CANDS_SMALL = [
-                    (0.20, 0.55, 0.25), (0.10, 0.70, 0.20),
-                    (0.05, 0.75, 0.20), (0.05, 0.85, 0.10),
-                    (0.00, 1.00, 0.00), (0.33, 0.34, 0.33),
-                ]
-                _CANDS_BALANCED = [
-                    (0.20, 0.55, 0.25),                     
-                    (1.00, 0.00, 0.00),                         
-                    (0.00, 1.00, 0.00),                       
-                    (0.00, 0.00, 1.00),                        
-                    (0.70, 0.20, 0.10),                             
-                    (0.60, 0.30, 0.10),
-                    (0.10, 0.70, 0.20),                           
-                    (0.05, 0.85, 0.10),
-                    (0.10, 0.35, 0.55),                            
-                    (0.05, 0.25, 0.70),
-                    (0.33, 0.34, 0.33),                      
-                ]
-                _fmode = cfg.get("fusion_mode", "fixed")
-                _default_cands = (_CANDS_BALANCED if _fmode == "calib_small_balanced"
-                                  else _CANDS_SMALL)
-                y_cal_k = np.asarray(c.get("y_cal", []), dtype=np.int64)
-                e1_cal = np.asarray([self._tail_evi(v, s1) for v in s1], dtype=np.float32)
-                e2_cal = np.asarray([self._tail_evi(v, s2) for v in s2], dtype=np.float32)
-                e3_cal = (np.asarray([self._tail_evi(v, s3) for v in s3], dtype=np.float32)
-                          if s3 is not None else None)
-                _cands = list(cfg.get("fusion_small_candidates") or _default_cands)
-                _extra_cands = cfg.get("fusion_small_candidates_extra")
-                if _extra_cands:
-                    for ec in _extra_cands:
-                        if ec not in _cands:
-                            _cands.append(ec)
-                _pgrid = cfg.get("fusion_p_grid") or [
-                    0.05, 0.075, 0.10, 0.125, 0.15, 0.20, 0.25]
-                _cname = c.get("name", f"client{k}")
-                print(f"    [FusionSearch] mode={_fmode}, n_cands={len(_cands)}, "
-                      f"n_pgrid={len(_pgrid)}, client={_cname}")
-                print(f"    [FusionSearch] candidates={_cands}")
-                best_f1_c  = -1.0
-                best_w_c   = cfg.get("w_fusion", (0.20, 0.55, 0.25))
-                best_tau_c = None
-                _cand_best: dict = {}                                    
-                if len(np.unique(y_cal_k)) >= 2 and int(y_cal_k.sum()) > 0:
-                    for w_c in _cands:
-                        if e3_cal is not None:
-                            E_c = w_c[0]*e1_cal + w_c[1]*e2_cal + w_c[2]*e3_cal
-                        else:
-                            t = w_c[0] + w_c[1]
-                            E_c = ((w_c[0]/max(t, 1e-8))*e1_cal
-                                   + (w_c[1]/max(t, 1e-8))*e2_cal)
-                        _best_f1_this = -1.0
-                        _fbeta = float(cfg.get("fusion_search_beta", 1.0))
-                        for p in _pgrid:
-                            tau_c = float(np.quantile(E_c, 1.0 - p))
-                            yp_c  = (E_c > tau_c).astype(np.int64)
-                            if _fbeta == 1.0:
-                                f1v_c = float(f1_score(y_cal_k, yp_c, zero_division=0))
-                            else:
-                                from sklearn.metrics import fbeta_score as _fbs
-                                f1v_c = float(_fbs(y_cal_k, yp_c, beta=_fbeta, zero_division=0))
-                            if f1v_c > _best_f1_this:
-                                _best_f1_this = f1v_c
-                            if f1v_c > best_f1_c:
-                                best_f1_c, best_w_c, best_tau_c = f1v_c, w_c, tau_c
-                        _cand_best[w_c] = _best_f1_this
-                    _beta_label = f"calF{_fbeta}" if _fbeta != 1.0 else "calF1"
-                    print(f"    [FusionSearch/{_cname}] per-cand best {_beta_label}:")
-                    for ww, ff in sorted(_cand_best.items(), key=lambda x: -x[1]):
-                        marker = " <-- SELECTED" if ww == best_w_c else ""
-                        print(f"      w={ww}  {_beta_label}={ff:.4f}{marker}")
-                E_fb = (best_w_c[0]*e1_cal + best_w_c[1]*e2_cal
-                        + (best_w_c[2]*e3_cal if e3_cal is not None else 0.0))
-                if best_tau_c is None:
-                    best_tau_c = float(np.quantile(E_fb, 0.90))
-                                                                                 
-                                                               
-                _tmode_ovr = cfg.get("adaptive_threshold_mode", "f1")
-                if _tmode_ovr in ("rate", "quantile", "ratio", "normal_percentile",
-                                  "f1_rate_guard", "f1_fpr_guard", "f1_guard"):
-                    best_tau_c = self._pick_threshold(E_fb, y_cal_k)
-                    print(f"    [FusionSearch/{_cname}] threshold override "
-                          f"mode={_tmode_ovr}  tau={best_tau_c:.6f}")
-                self.client_fusion_weights[k] = best_w_c
-                self.client_thresholds[k]     = best_tau_c
-                self.client_cal_info[k] = {
-                    "selected_w":   best_w_c,
-                    "selected_tau": best_tau_c,
-                    "cal_f1":       best_f1_c,
-                }
-            else:
-                                                   
-                _pcw = cfg.get("w_fusion_per_client")
-                if _pcw is not None and k < len(_pcw):
-                    self.client_fusion_weights[k] = _pcw[k]
-                E_cal = self._compute_evidence(s1, s2, s3, k)
-                self.client_thresholds[k] = self._pick_threshold(E_cal, c.get("y_cal", np.array([])))
-                _eff_w = self.client_fusion_weights.get(k, self.cfg.get("w_fusion", (0.15, 0.60, 0.25)))
-                self.client_cal_info[k] = {
-                    "selected_w":   _eff_w,
-                    "selected_tau": self.client_thresholds[k],
-                    "cal_f1":       float("nan"),
-                }
+        if center_np is None:
+            center_np = self.center.detach().cpu().numpy()
+        _, A_hat = self.client_graphs[k]
+        Z, _ = self._encode_dataset(
+            client[key], self.encoder, A_hat,
+            cfg["n_anchor"], cfg["graph_in_encoder"], cfg["batch_size"]
+        )
+        Z_np = Z.detach().cpu().numpy()
+        cmode = cfg.get("center_score_mode", "global")
+        c_k = self.client_local_centers.get(k)
+        if cmode == "local" and c_k is not None:
+            s1 = ((Z_np - c_k) ** 2).sum(axis=1).astype(np.float32)
+        elif cmode == "hybrid" and c_k is not None:
+            beta = float(cfg.get("center_hybrid_beta", 0.5))
+            s1 = (beta * ((Z_np - center_np) ** 2).sum(axis=1)
+                  + (1.0 - beta) * ((Z_np - c_k) ** 2).sum(axis=1)).astype(np.float32)
+        else:
+            s1 = ((Z_np - center_np) ** 2).sum(axis=1).astype(np.float32)
 
-                                                                        
-    def predict(self, clients: List[dict]) -> List[dict]:
-        cfg       = self.cfg
-        center_np = self.center.detach().cpu().numpy()
-        results   = []
-        for k, c in enumerate(clients):
-            _, A_hat = self.client_graphs[k]
-            Z_te, _  = self._encode_dataset(
-                c["X_test"], self.encoder, A_hat,
-                cfg["n_anchor"], cfg["graph_in_encoder"], cfg["batch_size"]
-            )
-            Z_te_np = Z_te.detach().cpu().numpy()
-            cmode = cfg.get("center_score_mode", "global")
-            c_k   = self.client_local_centers.get(k)
-            if cmode == "local" and c_k is not None:
-                s1 = ((Z_te_np - c_k) ** 2).sum(axis=1).astype(np.float32)
-            elif cmode == "hybrid" and c_k is not None:
-                beta = float(cfg.get("center_hybrid_beta", 0.5))
-                s1 = (beta       * ((Z_te_np - center_np) ** 2).sum(axis=1)
-                      + (1-beta) * ((Z_te_np - c_k)        ** 2).sum(axis=1)
-                      ).astype(np.float32)
-            else:
-                s1 = ((Z_te_np - center_np) ** 2).sum(axis=1).astype(np.float32)
-            s2      = self._flow_scores(k, Z_te)
+        s2 = self._flow_scores(k, Z)
+        s3 = None
+        if cfg["use_graph_residual"] and cfg["use_graph"]:
+            s3 = self._compute_graph_residual_score(client[key], self.client_signed_graphs[k])
+        return s1, s2, s3
 
-            s3 = None
-            if cfg["use_graph_residual"] and cfg["use_graph"]:
-                s3 = self._compute_graph_residual_score(
-                    c["X_test"], self.client_signed_graphs[k])
-
-                                                                         
-            _orient = self.client_score_orient.get(k, {})
-            if _orient.get("flip1"): s1 = -s1
-            if _orient.get("flip2"): s2 = -s2
-            if _orient.get("flip3") and s3 is not None: s3 = -s3
-
-            E    = self._compute_evidence(s1, s2, s3, k)
-            tau  = self.client_thresholds[k]
-            y_pred = (E > tau).astype(np.int64)
-            score  = 1.0 - np.exp(-np.clip(E, 0.0, 50.0))
-
-            cal_info = self.client_cal_info.get(k, {})
-            result = {
-                "client_id":   k,
-                "client_name": c.get("client_name", f"client{k}"),
-                "y_true":      c["y_test"],
-                "y_pred":      y_pred,
-                "score":       score.astype(np.float32),
-                "tau":         tau,
-                "selected_w":  cal_info.get("selected_w"),
-                "cal_f1":      cal_info.get("cal_f1", float("nan")),
-                "s1_raw":      s1.astype(np.float32),
-                "s2_raw":      s2.astype(np.float32),
-                "s3_raw":      s3.astype(np.float32) if s3 is not None else None,
-            }
-
-            if s3 is not None:
-                s1_n = (s1 - s1.mean()) / (s1.std() + 1e-8)
-                s2_n = (s2 - s2.mean()) / (s2.std() + 1e-8)
-                s3_n = (s3 - s3.mean()) / (s3.std() + 1e-8)
-                with np.errstate(invalid='ignore', divide='ignore'):
-                    r13 = float(np.corrcoef(s1_n, s3_n)[0, 1])
-                    r23 = float(np.corrcoef(s2_n, s3_n)[0, 1])
-                result["score_corr_s1_s3"] = float(np.nan_to_num(r13))
-                result["score_corr_s2_s3"] = float(np.nan_to_num(r23))
-
-            results.append(result)
-
+    def score(self, clients: List[dict], split: str = "test") -> List[dict]:
+        results = []
+        for k, client in enumerate(clients):
+            s1, s2, s3 = self._branch_scores(k, client, split=split)
+            evidence = self._compute_evidence(s1, s2, s3, k)
+            score = 1.0 - np.exp(-np.clip(evidence, 0.0, 50.0))
+            results.append({
+                "client_id": k,
+                "client_name": client.get("client_name", f"client{k}"),
+                "score": score.astype(np.float32),
+                "evidence": evidence.astype(np.float32),
+                "s1_raw": s1.astype(np.float32),
+                "s2_raw": s2.astype(np.float32),
+                "s3_raw": s3.astype(np.float32) if s3 is not None else None,
+            })
         return results
+
+    def predict(self, clients: List[dict]) -> List[dict]:
+        return self.score(clients, split="test")

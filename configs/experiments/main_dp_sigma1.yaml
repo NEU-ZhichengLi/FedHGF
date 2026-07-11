@@ -3,6 +3,7 @@ model: configs/models/fedhgf.yaml
 
 privacy:
   enabled: true
+  secure_aggregation_backend: assumed
   delta: 1.0e-5
   server_visible_channels:
     graph:
@@ -21,4 +22,3 @@ privacy:
       dp_noise: false
     calibration:
       dp_noise: false
-
