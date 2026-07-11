@@ -30,10 +30,7 @@ class GraphPropagation(nn.Module):
 
 
 class TemporalGraphEncoder(nn.Module):
-    """
-    时序图编码器。
-    A_hat 覆盖全部 n_k 节点（anchor + aux），直接送入图传播，不做 pooling。
-    """
+    """Temporal graph encoder for anchor and auxiliary nodes."""
 
     def __init__(self, d_x: int, d_h: int, generator=None, device=None):
         super().__init__()
@@ -52,7 +49,6 @@ class TemporalGraphEncoder(nn.Module):
                     param.zero_()
 
         self.graph_prop = GraphPropagation(d_h, generator=generator, device=device)
-                                                                                   
         self.readout_proj = nn.Linear(5 * d_h, d_h)
         nn.init.xavier_uniform_(self.readout_proj.weight)
         nn.init.zeros_(self.readout_proj.bias)
@@ -79,8 +75,6 @@ class TemporalGraphEncoder(nn.Module):
         H_tilde = h_seq
         G = self.graph_prop(H_tilde, A_hat) if use_graph else H_tilde
 
-                                                                           
-                                                                               
         z_mean = G.mean(dim=(1, 2))                                        
         z_max  = G.amax(dim=(1, 2))                                        
         z_std  = G.std(dim=(1, 2))                                         
@@ -100,11 +94,6 @@ class TemporalGraphEncoder(nn.Module):
                 pred_next = None
             return (z, G if return_graph_seq else None, pred_next)
         return (z, G) if return_graph_seq else (z, None)
-
-
-                                                                             
-                 
-                                                                             
 
 class MaskedLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int, bias: bool = True):
@@ -172,11 +161,6 @@ class MAF(nn.Module):
         out    = log_p0 + log_det_total
         return out.squeeze(0) if squeeze else out
 
-
-                                                                             
-     
-                                                                             
-
 def graph_smoothness_reg(G: torch.Tensor, A_raw: torch.Tensor) -> torch.Tensor:
     n = G.size(2)
     D  = torch.diag(A_raw.sum(dim=1))
@@ -194,20 +178,12 @@ def temporal_reg(G: torch.Tensor) -> torch.Tensor:
     return (diff.pow(2).sum(dim=(-1, -2)) / n).mean()
 
 
-                                                                      
-                                                                                
 def patch_continuity_reg(G: torch.Tensor) -> torch.Tensor:
     if G.size(1) <= 1:
         return torch.zeros((), device=G.device, dtype=G.dtype)
     n    = G.size(2)
     diff = G[:, 1:] - G[:, :-1]
     return (diff.pow(2).sum(dim=(-1, -2)) / n).mean()
-
-
-                                                                             
-                     
-                                                                             
-                                                                             
 
 class NPFormerGPEncoder(nn.Module):
     """
@@ -242,9 +218,6 @@ class NPFormerGPEncoder(nn.Module):
         device=None,
     ):
         super().__init__()
-                                                                 
-                                                                    
-                                                                     
         if patch_len <= 0:
             raise ValueError(f"patch_len must be positive, got {patch_len}.")
         if patch_stride <= 0:
@@ -281,54 +254,39 @@ class NPFormerGPEncoder(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer,
                                                  num_layers=num_layers)
 
-                                                                  
-                                                                         
         self.graph_prop  = GraphPropagation(d_h, generator=generator,
                                             device=device)
         self.norm_after_graph = nn.LayerNorm(d_h)
         self.gp_dropout       = nn.Dropout(dropout)
 
-                                                             
         self.attn_fc  = nn.Linear(d_h, d_h)
         self.attn_vec = nn.Linear(d_h, 1, bias=False)
         nn.init.xavier_uniform_(self.attn_fc.weight)
         nn.init.zeros_(self.attn_fc.bias)
         nn.init.xavier_uniform_(self.attn_vec.weight)
 
-                                                                      
-                                                                         
-                                                                              
         self.readout_proj = nn.Linear(5 * d_h, d_h)
         nn.init.xavier_uniform_(self.readout_proj.weight)
         nn.init.zeros_(self.readout_proj.bias)
 
-                                                                   
-                                                                          
-                                            
         self.pred_head = nn.Linear(d_h, d_x)
         nn.init.xavier_uniform_(self.pred_head.weight)
         nn.init.zeros_(self.pred_head.bias)
 
-                                                            
         self.P = self.num_patches
 
-                                                                  
     def _make_patches(self, X: torch.Tensor) -> torch.Tensor:
         """
         X: [B, T, n_k, d_x]  ->  [B, n_k, P, L*d_x]
         """
         B, T, n_k, D = X.shape
         L, S = self.patch_len, self.patch_stride
-                           
-                                
         x_perm = X.permute(0, 2, 1, 3).contiguous()
-                                             
         x_unf  = x_perm.unfold(dimension=2, size=L, step=S)                 
         x_unf  = x_unf.permute(0, 1, 2, 4, 3).contiguous()                   
         patches = x_unf.reshape(B, n_k, x_unf.size(2), L * D)
         return patches
 
-                                                                  
     def forward(
         self,
         X:       torch.Tensor,
@@ -340,9 +298,6 @@ class NPFormerGPEncoder(nn.Module):
     ):
         B, T, n_k, D = X.shape
 
-                                                                    
-                                                                           
-                               
         if T != self.window_size:
             raise ValueError(
                 f"NPFormerGPEncoder: input window length T={T} does not "
@@ -360,20 +315,16 @@ class NPFormerGPEncoder(nn.Module):
         Y = Y.view(B, n_k, P, self.d_h).permute(0, 2, 1, 3).contiguous()
                              
 
-                                                               
         if use_graph:
             G_prop = self.graph_prop(Y, A_hat)
             G      = self.norm_after_graph(Y + self.gp_dropout(G_prop))
         else:
             G = Y
 
-                                                                    
         score = self.attn_vec(torch.tanh(self.attn_fc(G))).squeeze(-1)
-                            
         alpha = torch.softmax(score, dim=1)
         u     = (G * alpha.unsqueeze(-1)).sum(dim=1)                       
 
-                                                                      
         z_mean = u.mean(dim=1)                                        
         z_max  = u.amax(dim=1)                                        
         z_std  = u.std(dim=1) if u.size(1) > 1 else torch.zeros_like(z_mean)
@@ -390,7 +341,6 @@ class NPFormerGPEncoder(nn.Module):
         )                                                             
 
         if return_pred:
-                                                                
             if G.size(1) > 1:
                 pred_next = self.pred_head(G[:, :-1])                        
             else:

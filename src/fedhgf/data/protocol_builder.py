@@ -24,14 +24,21 @@ HAI_CLIENT_PROCESSES = ("P1", "P2", "P4")
 HAI_ANCHOR_PROCESS = "P3"
 
 WADI_ANCHORS = (
-    "3_LT_001_PV",
-    "3_FIT_001_PV",
     "3_AIT_001_PV",
     "3_AIT_002_PV",
     "3_AIT_003_PV",
     "3_AIT_004_PV",
     "3_AIT_005_PV",
+    "3_FIT_001_PV",
+    "3_LS_001_AL",
+    "3_LT_001_PV",
+    "3_MV_001_STATUS",
+    "3_MV_002_STATUS",
+    "3_MV_003_STATUS",
     "3_P_001_STATUS",
+    "3_P_002_STATUS",
+    "3_P_003_STATUS",
+    "3_P_004_STATUS",
 )
 
 SWAT_ANCHORS = ("FIT101", "FIT201", "FIT301", "FIT401", "FIT501", "FIT601")
@@ -146,7 +153,6 @@ def _federation(
 ) -> FederationDataset:
     fed = FederationDataset(
         dataset=dataset,
-        protocol_version=2,
         federation_type="shared_context_vertical",
         shared_anchor_observations=True,
         clients=tuple(clients),
@@ -277,7 +283,6 @@ def build_hai_shared_context_protocol(
         ))
     federation = FederationDataset(
         dataset="hai",
-        protocol_version=2,
         federation_type="shared_context_vertical",
         shared_anchor_observations=True,
         clients=tuple(feature_clients),
@@ -310,7 +315,7 @@ def build_wadi_shared_context_protocol(
     )
     anchor_names = tuple(c for c in WADI_ANCHORS if c in feature_names)
     if not anchor_names:
-        anchor_names = tuple(c for c in feature_names if c.startswith("3_"))[:8]
+        anchor_names = tuple(c for c in feature_names if c.startswith("3_"))[:15]
     split = attach_test_range(
         split_normal_train_cal(len(normal_df), train_fraction=train_fraction, guard_gap=guard_gap),
         n_test_rows=len(test_df),
@@ -471,7 +476,6 @@ def to_model_clients(federation: FederationDataset) -> tuple[list[dict], int, li
             "X_cal": client.calibration_x,
             "X_test": client.test_x,
             "n_k": client.train_x.shape[2],
-            "protocol_version": federation.protocol_version,
             "federation_type": federation.federation_type,
             "window_indices": {
                 "train": client.train_index,

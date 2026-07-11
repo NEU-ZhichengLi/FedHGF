@@ -1,4 +1,4 @@
-protocol: configs/protocols/hai_shared_context.yaml
+protocol: configs/protocols/shared_context.yaml
 model: configs/models/fedhgf.yaml
 
 privacy:

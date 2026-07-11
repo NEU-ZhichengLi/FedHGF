@@ -1,0 +1,48 @@
+federation_type: shared_context_vertical
+shared_anchor_observations: true
+
+normal_split:
+  train_fraction: 0.80
+  guard_gap: 15
+
+test_policy:
+  use_complete_test_sequence: true
+  preserve_natural_anomaly_rate: true
+  shuffle: false
+
+datasets:
+  hai:
+    clients:
+      - P1
+      - P2
+      - P4
+    anchor_process: P3
+    window:
+      length: 16
+      stride: 4
+  wadi:
+    clients:
+      - Zone1
+      - Zone2
+    window:
+      length: 16
+      stride: 4
+  swat:
+    clients:
+      - Stage1
+      - Stage2
+      - Stage3
+      - Stage4
+      - Stage5
+      - Stage6
+    window:
+      length: 16
+      stride: 4
+  batadal:
+    clients:
+      - ZoneA
+      - ZoneB
+    window:
+      length: 32
+      stride: 1
+    label_mode: last

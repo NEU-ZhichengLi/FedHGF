@@ -102,7 +102,6 @@ class ClientFeatures:
 @dataclass(frozen=True)
 class FederationDataset:
     dataset: str
-    protocol_version: int
     federation_type: str
     shared_anchor_observations: bool
     clients: tuple[ClientFeatures, ...]

@@ -106,7 +106,6 @@ def _synthetic_client(client_id: str, source: str) -> ClientFeatures:
 def test_independent_site_anchors_have_distinct_sources():
     fed = FederationDataset(
         dataset="synthetic",
-        protocol_version=2,
         federation_type="horizontal_semantic_anchor",
         shared_anchor_observations=False,
         clients=(_synthetic_client("c1", "site1:a"), _synthetic_client("c2", "site2:a")),
@@ -120,7 +119,6 @@ def test_independent_site_anchors_have_distinct_sources():
 
     bad = FederationDataset(
         dataset=fed.dataset,
-        protocol_version=fed.protocol_version,
         federation_type=fed.federation_type,
         shared_anchor_observations=False,
         clients=(_synthetic_client("c1", "same:a"), _synthetic_client("c2", "same:a")),
@@ -142,7 +140,6 @@ def test_model_facing_features_do_not_carry_labels():
     client = _synthetic_client("c1", "site:a")
     fed = FederationDataset(
         dataset="synthetic",
-        protocol_version=2,
         federation_type="shared_context_vertical",
         shared_anchor_observations=True,
         clients=(client,),
@@ -200,7 +197,7 @@ def _model_snapshot(model_clients: list[dict]) -> tuple:
     )
 
 
-def test_no_label_used_in_protocol_builder():
+def test_protocol_builder_uses_feature_time_axes_only():
     with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
         labels_a = np.array([0, 1, 0, 0, 1, 0, 0, 1], dtype=np.int64)
         labels_b = np.zeros_like(labels_a)
@@ -232,7 +229,7 @@ def test_protocol_preserves_complete_test_axis_and_natural_rate():
         assert float(y.mean()) == float(np.mean([1, 1, 1]))
 
 
-def test_fedgad_score_contract_has_no_labels_or_thresholds():
+def test_fedgad_score_returns_local_evidence_only():
     model = FedGAD(n_anchor=1, device="cpu")
     model._branch_scores = lambda k, c, split, center_np=None: (
         np.array([0.0, 1.0], dtype=np.float32),
@@ -250,7 +247,7 @@ def test_fedgad_score_contract_has_no_labels_or_thresholds():
     assert "y_true" not in out and "y_pred" not in out and "tau" not in out
 
 
-def test_dp_aggregator_is_simulated_and_records_server_visible_event():
+def test_dp_aggregator_records_server_visible_event():
     messages = [
         ClientMessage("c1", 1, "encoder", torch.ones(2), 2),
         ClientMessage("c2", 1, "encoder", torch.zeros(2), 2),

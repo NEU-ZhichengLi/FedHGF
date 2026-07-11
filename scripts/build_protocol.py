@@ -40,7 +40,6 @@ def main() -> None:
     federation = build_protocol(args.dataset, data_dir, **kwargs)
     payload = {
         "dataset": federation.dataset,
-        "protocol_version": federation.protocol_version,
         "federation_type": federation.federation_type,
         "shared_anchor_observations": federation.shared_anchor_observations,
         "n_clients": len(federation.clients),

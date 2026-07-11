@@ -32,11 +32,10 @@ def validate_anchor_semantics(federation: FederationDataset) -> None:
 def validate_model_features_are_label_free(federation: FederationDataset) -> None:
     for client in federation.clients:
         if hasattr(client, "test_y") or hasattr(client, "calibration_y"):
-            raise ValueError(f"{client.client_id}: labels leaked into ClientFeatures")
+            raise ValueError(f"{client.client_id}: ClientFeatures must not contain labels")
 
 
 def validate_protocol(federation: FederationDataset) -> None:
     validate_temporal_disjointness(federation)
     validate_anchor_semantics(federation)
     validate_model_features_are_label_free(federation)
-

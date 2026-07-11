@@ -89,14 +89,6 @@ def build_full_client_graph(
     n_top_anchors:      int   = 2,
     return_signed:      bool  = False,
 ) -> np.ndarray:
-    """
-    构造完整的 (n_anchor + n_aux) x (n_anchor + n_aux) 邻接矩阵。
-    每个 aux 节点独立保留，不压缩为虚拟节点。
-
-    anchor_aux_corr : [n_aux, n_anchor] 相关系数矩阵。
-        若提供，则每个 aux 节点仅与其最相关的 top-n_top_anchors 个
-        anchor 稀疏连接（权重正比于绝对相关系数），替代单一 designated anchor。
-    """
     n_anchor = len(anchor_cols)
     n_aux    = len(aux_cols)
     n_total  = n_anchor + n_aux
@@ -179,18 +171,8 @@ def estimate_aux_correlation(
     return corr.astype(np.float32)
 
 
-def _spearman_corrcoef(flat: np.ndarray) -> np.ndarray:
-    """Spearman 相关系数（= Pearson on ranks），无需 scipy。"""
-    ranks = np.argsort(np.argsort(flat, axis=1), axis=1).astype(np.float64)
-    return np.corrcoef(ranks).astype(np.float32)
-
 
 def _safe_corrcoef(flat: np.ndarray, eps: float = 1e-8) -> np.ndarray:
-    """
-    NaN-safe Pearson 相关矩阵。
-    零/近零方差通道（HAI 控制量常见）直接置 0，不参与 corrcoef 计算，
-    避免 numpy RuntimeWarning: invalid value encountered in divide。
-    """
     n = flat.shape[0]
     stds = flat.std(axis=1)                
     valid = np.where(stds > eps)[0]             
@@ -226,14 +208,10 @@ def _relation_corr_from_windows(
 
 
 def estimate_anchor_aux_correlation(
-    X_train:  np.ndarray,
+    X_train: np.ndarray,
     n_anchor: int,
     relation_value_weight: float = 0.5,
 ) -> Optional[np.ndarray]:
-    """
-    计算每个 aux 节点与每个 anchor 节点的相关系数矩阵 [n_aux, n_anchor]，
-    用于 build_full_client_graph 中的 top-r sparse anchor coupling。
-    """
     N, T, n_k, _ = X_train.shape
     n_aux = n_k - n_anchor
     if n_aux == 0 or n_anchor == 0:
@@ -332,10 +310,10 @@ def _check_collapse(Z: torch.Tensor, round_idx: int, n_rounds: int,
         z_std   = Z.std(dim=0).mean().item()
         z_norm  = Z.norm(dim=1).mean().item()
         z_range = (Z.max() - Z.min()).item()
-    status = "[!] COLLAPSED" if z_std < std_thr else "OK"
-    print(f"      [CollapseCheck] Round {round_idx}/{n_rounds} | "
+    status = "collapsed" if z_std < std_thr else "stable"
+    print(f"      Round {round_idx}/{n_rounds} | "
           f"embed_std={z_std:.5f}  embed_norm={z_norm:.4f}  "
-          f"embed_range={z_range:.4f}  [{status}]")
+          f"embed_range={z_range:.4f}  {status}")
     return z_std < std_thr
 
 
@@ -377,7 +355,6 @@ class FedGAD:
         w_fusion: Tuple = (0.35, 0.35, 0.30),
         use_graph:       bool  = True,
         use_flow:        bool  = True,
-        flow_mode:       str   = "local",                       
         use_calibration: bool  = True,
         score_mode:      str   = "both",
         eta_s:           float = 1.0,
@@ -391,15 +368,12 @@ class FedGAD:
         n_top_anchors:              int   = 2,
         lambda_c:   float = 1.0,
         use_data_driven_cross_block: bool  = False,
-        track_convergence:     bool  = False,
         hybrid_center_alpha:   float = 0.0,
         adaptive_hybrid_alpha: bool  = False,
         use_prediction_loss:   bool  = False,
         lambda_pred:           float = 1.0,
         center_score_mode:     str   = "local",
         center_hybrid_beta:    float = 0.5,                                             
-                                                                       
-                                                                           
         encoder_type: str = "npformer_gp",                          
         window_size:  int = None,                                                          
         patch_len:    int = 4,
@@ -500,13 +474,6 @@ class FedGAD:
         X_np:  np.ndarray,
         A_hat: torch.Tensor,
     ) -> np.ndarray:
-        """
-        第三分支图残差分数。
-
-        U_t(X) in R^{n_k x d_x}，逐窗口计算：
-            r_{k,t} = (1 / n_k d_x) * ||dU_t - A_hat_k dU_t||_F^2
-        其中 dU_t = U_t - U_{t-1}，最终对时间维度 max/mean 聚合得到窗口分数。
-        """
         mode  = self.cfg.get("graph_residual_mode", "diff_max")
         X     = torch.as_tensor(X_np, dtype=torch.float32, device=self.device)
         B, T, n_k, d_x = X.shape
@@ -546,14 +513,13 @@ class FedGAD:
         return residual.detach().cpu().numpy().astype(np.float32)
 
                                                                         
-    def fit(self, clients: List[dict], stage1_round_cb=None) -> None:
+    def fit(self, clients: List[dict]) -> None:
         cfg = self.cfg
                                                               
                                                                         
                                                                     
         if cfg.get("graph_in_encoder") is None:
             cfg["graph_in_encoder"] = cfg["use_graph"]
-        self._stage1_round_cb = stage1_round_cb
         t0  = time.time()
 
         if cfg["use_graph"]:
@@ -614,7 +580,7 @@ class FedGAD:
                   f"T={self.encoder.window_size}  L={self.encoder.patch_len}  "
                   f"S={self.encoder.patch_stride}  P={self.encoder.num_patches}  "
                   f"layers={cfg.get('tf_layers', 2)}  heads={cfg.get('tf_heads', 4)}")
-        elif encoder_type in ("gru", "temporal_gru", "legacy"):
+        elif encoder_type in ("gru", "temporal_gru"):
             self.encoder = TemporalGraphEncoder(
                 cfg["d_x"], cfg["d_h"],
                 generator=self.torch_generator, device=self.device
@@ -641,12 +607,8 @@ class FedGAD:
 
         if cfg["use_flow"] and cfg["score_mode"] != "center_only":
             t1 = time.time()
-            if cfg.get("flow_mode", "local") == "global":
-                self._stage2_global(clients)
-                print(f"    Stage II (global flow) done ({time.time() - t1:.1f}s)")
-            else:
-                self._stage2(clients)
-                print(f"    Stage II (local flow) done ({time.time() - t1:.1f}s)")
+            self._stage2(clients)
+            print(f"    Stage II (local flow) done ({time.time() - t1:.1f}s)")
 
         self._calibrate(clients)
 
@@ -810,14 +772,6 @@ class FedGAD:
                     self.encoder.parameters())
                 self.center = center_sum.detach()
 
-                                                                          
-            _cb = getattr(self, "_stage1_round_cb", None)
-            if _cb is not None:
-                try:
-                    _cb(r, self, clients)
-                except Exception as _e:
-                    print(f"    [round_cb error] {_e}")
-
                                    
             if _round_batches > 0:
                 _avg_c = _round_center_loss / _round_batches
@@ -827,28 +781,6 @@ class FedGAD:
                           f"pred_loss={_avg_p:.4f}")
                 else:
                     print(f"    [R{r+1:02d}] center_loss={_avg_c:.4f}")
-
-            if cfg.get("track_convergence", False):
-                round_cdists = []
-                center_np = self.center.detach().cpu().numpy()
-                self.encoder.eval()
-                with torch.no_grad():
-                    for k, c in enumerate(clients):
-                        _, A_hat_k = self.client_graphs[k]
-                        Z_test, _  = self._encode_dataset(
-                            c["X_test"], self.encoder, A_hat_k,
-                            cfg["n_anchor"], cfg["graph_in_encoder"], cfg["batch_size"]
-                        )
-                        Z_np = Z_test.cpu().numpy()
-                        s1   = np.sum((Z_np - center_np) ** 2, axis=1)
-                        round_cdists.append(float(np.sqrt(s1).mean()))
-                if round_cdists:
-                    self.round_history.append({
-                        "round":            r + 1,
-                        "center_dist_mean": float(np.nanmean(round_cdists)),
-                        "center_dist_std":  float(np.nanstd(round_cdists)),
-                        "n_clients":        len(round_cdists),
-                    })
 
             with torch.no_grad():
                 _, A_hat_0 = self.client_graphs[0]
@@ -863,7 +795,7 @@ class FedGAD:
             if collapsed:
                 collapse_count += 1
                 if collapse_count >= collapse_patience:
-                    print(f"      [STOP] 连续 {collapse_patience} 轮坍缩，提前停止")
+                    print(f"      Stop after {collapse_patience} low-variance rounds")
                     break
             else:
                 collapse_count = 0
@@ -898,40 +830,6 @@ class FedGAD:
                     optimizer.step()
             flow.eval()
             self.client_flows[k] = flow
-
-                                                                        
-    def _stage2_global(self, clients: List[dict]):
-        """Train one shared flow on all clients' embeddings."""
-        cfg = self.cfg
-        self.encoder.eval()
-        all_Z = []
-        for k, c in enumerate(clients):
-            _, A_hat = self.client_graphs[k]
-            Z_k, _   = self._encode_dataset(
-                c["X_train"], self.encoder, A_hat,
-                cfg["n_anchor"], cfg["graph_in_encoder"], cfg["batch_size"]
-            )
-            all_Z.append(Z_k.detach())
-        Z_all = torch.cat(all_Z, dim=0)
-        flow      = MAF(cfg["d_h"], cfg["flow_blocks"],
-                        cfg["flow_hidden"]).to(self.device)
-        optimizer = torch.optim.Adam(
-            flow.parameters(),
-            lr=cfg["flow_lr"], weight_decay=cfg["lambda_phi"]
-        )
-        N = Z_all.size(0)
-        for _ in range(cfg["flow_epochs"]):
-            perm = torch.randperm(N, device=self.device,
-                                  generator=self.torch_generator)
-            for bi in range(0, N, cfg["batch_size"]):
-                idx  = perm[bi:bi + cfg["batch_size"]]
-                zb   = Z_all.index_select(0, idx)
-                loss = -flow.log_prob(zb).mean()
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
-        flow.eval()
-        self.client_flows = {k: flow for k in range(len(clients))}
 
                                                                         
     def _tail_evi(self, v: float, cal_scores: np.ndarray) -> float:
