@@ -10,7 +10,7 @@ env/
 .vscode/
 
 # Local datasets and generated outputs
-Data/
+/Data/
 dataset/
 results*/
 logs/

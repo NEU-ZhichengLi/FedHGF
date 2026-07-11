@@ -18,11 +18,8 @@ sys.path.insert(0, str(REPO))
 
 from fedgad_full import FedGAD
 from src.fedhgf.calibration import QuantileCalibrator
-from src.fedhgf.data.protocol_builder import (
-    build_hai_shared_context_protocol,
-    to_model_clients,
-)
-from src.fedhgf.evaluation import load_hai_test_labels, windowize_labels_for_evaluation
+from src.fedhgf.data.protocol_builder import build_protocol, to_model_clients
+from src.fedhgf.evaluation import windowize_test_labels
 from src.fedhgf.evaluation.window_metrics import window_metrics
 
 
@@ -137,8 +134,8 @@ def _apply_privacy_config(model_config: dict, experiment_config: dict) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", choices=["hai"], default="hai")
-    ap.add_argument("--data-dir", default=str(Path("Data") / "HAI 21.03"))
+    ap.add_argument("--dataset", choices=["hai", "wadi", "swat", "batadal"], default="hai")
+    ap.add_argument("--data-dir", default=None)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--alert-budget", type=float, default=0.05)
@@ -147,7 +144,16 @@ def main() -> None:
     args = ap.parse_args()
 
     experiment_config = _load_simple_yaml(args.experiment_config)
-    federation = build_hai_shared_context_protocol(args.data_dir)
+    data_dir = args.data_dir or str(Path("Data") / {
+        "hai": "HAI 21.03",
+        "wadi": "WADI",
+        "swat": "SWAT",
+        "batadal": "BATADAL",
+    }[args.dataset])
+    label_mode = args.label_mode
+    if args.dataset == "batadal" and label_mode == "any":
+        label_mode = "last"
+    federation = build_protocol(args.dataset, data_dir)
     clients, n_anchor, _ = to_model_clients(federation)
 
     model_config = _base_model_config(args.device, args.seed)
@@ -156,11 +162,12 @@ def main() -> None:
     model.fit(clients)
     cal_scores = {r["client_name"]: r["score"] for r in model.score(clients, split="calibration")}
     test_scores = {r["client_name"]: r["score"] for r in model.score(clients, split="test")}
-    test_y = windowize_labels_for_evaluation(
-        load_hai_test_labels(args.data_dir),
+    test_y = windowize_test_labels(
+        args.dataset,
+        data_dir,
         federation.window_length,
         federation.stride,
-        label_mode=args.label_mode,
+        label_mode=label_mode,
     )
 
     per_client = []

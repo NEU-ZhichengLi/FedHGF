@@ -34,6 +34,7 @@ from src.fedhgf.data.windowing import (
 )
 from src.fedhgf.evaluation import load_hai_test_labels, windowize_labels_for_evaluation
 from src.fedhgf.federation import AssumedSecAggAggregator, ClientMessage, DPSimulatedAggregator, PlainAggregator
+from src.fedhgf.data import protocol_builder
 
 
 def test_window_does_not_cross_split_boundary():
@@ -284,6 +285,12 @@ def test_local_auxiliary_graphs_do_not_accept_dp_noise():
     anchor_aux_b = estimate_anchor_aux_correlation(x, n_anchor=1)
     assert np.allclose(aux_a, aux_b)
     assert np.allclose(anchor_aux_a, anchor_aux_b)
+
+
+def test_four_dataset_protocol_builders_are_public_entrypoints():
+    assert hasattr(protocol_builder, "build_protocol")
+    for dataset in ("hai", "wadi", "swat", "batadal"):
+        assert dataset in protocol_builder.build_protocol.__code__.co_consts
 
 
 if __name__ == "__main__":
