@@ -22,6 +22,7 @@ from src.fedhgf.data.protocol_builder import (
     build_hai_shared_context_protocol,
     to_model_clients,
 )
+from src.fedhgf.evaluation import load_hai_test_labels, windowize_labels_for_evaluation
 from src.fedhgf.evaluation.window_metrics import window_metrics
 
 
@@ -141,6 +142,7 @@ def main() -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--alert-budget", type=float, default=0.05)
+    ap.add_argument("--label-mode", choices=["any", "last", "center", "majority"], default="any")
     ap.add_argument("--experiment-config", default=str(Path("configs") / "experiments" / "main_no_dp.yaml"))
     args = ap.parse_args()
 
@@ -154,6 +156,12 @@ def main() -> None:
     model.fit(clients)
     cal_scores = {r["client_name"]: r["score"] for r in model.score(clients, split="calibration")}
     test_scores = {r["client_name"]: r["score"] for r in model.score(clients, split="test")}
+    test_y = windowize_labels_for_evaluation(
+        load_hai_test_labels(args.data_dir),
+        federation.window_length,
+        federation.stride,
+        label_mode=args.label_mode,
+    )
 
     per_client = []
     for client in federation.clients:
@@ -161,8 +169,7 @@ def main() -> None:
         calibrator = QuantileCalibrator(alert_budget=args.alert_budget)
         calibrator.fit(cal_scores[name])
         pred = calibrator.predict(test_scores[name])
-        y_true = federation.labels[name].test_y
-        row = window_metrics(y_true, test_scores[name], pred)
+        row = window_metrics(test_y, test_scores[name], pred)
         row.update({"client": name, "threshold": calibrator.threshold_})
         per_client.append(row)
 

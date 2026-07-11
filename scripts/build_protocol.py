@@ -45,14 +45,9 @@ def main() -> None:
             client.client_id: len(client.test_x)
             for client in federation.clients
         },
-        "natural_test_anomaly_windows": {
-            client_id: int(labels.test_y.sum())
-            for client_id, labels in federation.labels.items()
-        },
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
     main()
-

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gzip
 import inspect
 import sys
 import tempfile
@@ -20,7 +19,6 @@ from src.fedhgf.data.protocol_builder import build_hai_shared_context_protocol, 
 from src.fedhgf.data.schema import (
     ClientFeatures,
     ClientSpec,
-    EvaluationLabels,
     FederationDataset,
     NodeSpec,
     TemporalRange,
@@ -32,9 +30,9 @@ from src.fedhgf.data.validation import (
 )
 from src.fedhgf.data.windowing import (
     count_windows,
-    windowize_labels_for_evaluation,
     windowize_segment,
 )
+from src.fedhgf.evaluation import load_hai_test_labels, windowize_labels_for_evaluation
 from src.fedhgf.federation import AssumedSecAggAggregator, ClientMessage, DPSimulatedAggregator, PlainAggregator
 
 
@@ -66,13 +64,10 @@ def test_test_set_is_not_resampled():
 
 
 def test_client_manifest_independent_of_labels():
-    def build_client_ids(labels: np.ndarray) -> tuple[str, ...]:
-        _ = windowize_labels_for_evaluation(labels, window_length=2, stride=1)
+    def build_client_ids() -> tuple[str, ...]:
         return ("P1", "P2", "P4")
 
-    labels_a = np.array([0, 1, 0, 1], dtype=np.int64)
-    labels_b = np.zeros_like(labels_a)
-    assert build_client_ids(labels_a) == build_client_ids(labels_b)
+    assert build_client_ids() == ("P1", "P2", "P4")
 
 
 def test_scaler_is_fitted_only_on_train():
@@ -114,13 +109,11 @@ def test_independent_site_anchors_have_distinct_sources():
         federation_type="horizontal_semantic_anchor",
         shared_anchor_observations=False,
         clients=(_synthetic_client("c1", "site1:a"), _synthetic_client("c2", "site2:a")),
-        labels={"c1": EvaluationLabels("c1", np.array([])), "c2": EvaluationLabels("c2", np.array([]))},
         n_anchor=1,
         anchor_names=("a",),
         temporal_split=TemporalSplit(TemporalRange(0, 1), TemporalRange(1, 2), TemporalRange(0, 1)),
         window_length=2,
         stride=1,
-        label_mode="any",
     )
     validate_anchor_semantics(fed)
 
@@ -130,13 +123,11 @@ def test_independent_site_anchors_have_distinct_sources():
         federation_type=fed.federation_type,
         shared_anchor_observations=False,
         clients=(_synthetic_client("c1", "same:a"), _synthetic_client("c2", "same:a")),
-        labels=fed.labels,
         n_anchor=fed.n_anchor,
         anchor_names=fed.anchor_names,
         temporal_split=fed.temporal_split,
         window_length=fed.window_length,
         stride=fed.stride,
-        label_mode=fed.label_mode,
     )
     try:
         validate_anchor_semantics(bad)
@@ -154,13 +145,11 @@ def test_model_facing_features_do_not_carry_labels():
         federation_type="shared_context_vertical",
         shared_anchor_observations=True,
         clients=(client,),
-        labels={"c1": EvaluationLabels("c1", np.array([0, 1]))},
         n_anchor=1,
         anchor_names=("a",),
         temporal_split=TemporalSplit(TemporalRange(0, 1), TemporalRange(1, 2), TemporalRange(0, 1)),
         window_length=2,
         stride=1,
-        label_mode="any",
     )
     validate_model_features_are_label_free(fed)
 
@@ -221,8 +210,25 @@ def test_no_label_used_in_protocol_builder():
         clients_a, _, _ = to_model_clients(fed_a)
         clients_b, _, _ = to_model_clients(fed_b)
         assert _model_snapshot(clients_a) == _model_snapshot(clients_b)
-        assert any(label.test_y.sum() > 0 for label in fed_a.labels.values())
-        assert all(label.test_y.sum() == 0 for label in fed_b.labels.values())
+        assert not hasattr(fed_a, "labels")
+        assert windowize_labels_for_evaluation(load_hai_test_labels(a), 4, 2).sum() > 0
+        assert windowize_labels_for_evaluation(load_hai_test_labels(b), 4, 2).sum() == 0
+
+
+def test_protocol_preserves_complete_test_axis_and_natural_rate():
+    with tempfile.TemporaryDirectory() as root:
+        labels = np.array([0, 1, 0, 0, 1, 0, 1, 0, 0], dtype=np.int64)
+        _write_hai_fixture(Path(root), labels)
+        fed = build_hai_shared_context_protocol(root, window_length=4, stride=2, guard_gap=3, max_train_rows=None)
+        expected_starts = tuple(range(0, len(labels) - 4 + 1, 2))
+        for client in fed.clients:
+            assert tuple(w.raw_start for w in client.test_index) == expected_starts
+            assert tuple(w.raw_end for w in client.test_index) == tuple(s + 4 for s in expected_starts)
+            assert len(client.test_x) == count_windows(len(labels), 4, 2)
+
+        y = windowize_labels_for_evaluation(load_hai_test_labels(root), 4, 2)
+        assert len(y) == count_windows(len(labels), 4, 2)
+        assert float(y.mean()) == float(np.mean([1, 1, 1]))
 
 
 def test_fedgad_score_contract_has_no_labels_or_thresholds():

@@ -15,7 +15,6 @@ test_policy:
 window:
   length: 16
   stride: 4
-  label_mode: any
 
 clients:
   - P1
@@ -24,4 +23,3 @@ clients:
 
 anchor:
   process: P3
-
