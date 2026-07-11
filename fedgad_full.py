@@ -164,14 +164,8 @@ def build_full_client_graph(
 def estimate_aux_correlation(
     X_train: np.ndarray,
     n_anchor: int,
-    C_g:    float = 1.0,
-    sigma_g: float = 0.1,
-    use_dp:  bool  = True,
-    rng:     Optional[np.random.RandomState] = None,
     relation_value_weight: float = 0.5,
 ) -> Optional[np.ndarray]:
-    if rng is None:
-        rng = np.random.RandomState(42)
     N, T, n_k, _ = X_train.shape
     n_aux = n_k - n_anchor
     if n_aux <= 1:
@@ -181,15 +175,6 @@ def estimate_aux_correlation(
         X_train[:, :, n_anchor:, :],
         relation_value_weight=relation_value_weight)
     np.fill_diagonal(corr, 0.0)
-
-    if use_dp and n_aux > 1:
-        iu  = np.triu_indices(n_aux, k=1)
-        r   = corr[iu].astype(np.float32)
-        r   = clip_perturb_np(r, C_g, sigma_g, rng)
-        out = np.zeros((n_aux, n_aux), dtype=np.float32)
-        out[iu] = r
-        out     = out + out.T
-        return out
 
     return corr.astype(np.float32)
 
@@ -243,18 +228,12 @@ def _relation_corr_from_windows(
 def estimate_anchor_aux_correlation(
     X_train:  np.ndarray,
     n_anchor: int,
-    C_g:    float = 1.0,
-    sigma_g: float = 0.1,
-    use_dp:  bool  = True,
-    rng:     Optional[np.random.RandomState] = None,
     relation_value_weight: float = 0.5,
 ) -> Optional[np.ndarray]:
     """
     计算每个 aux 节点与每个 anchor 节点的相关系数矩阵 [n_aux, n_anchor]，
     用于 build_full_client_graph 中的 top-r sparse anchor coupling。
     """
-    if rng is None:
-        rng = np.random.RandomState(42)
     N, T, n_k, _ = X_train.shape
     n_aux = n_k - n_anchor
     if n_aux == 0 or n_anchor == 0:
@@ -288,11 +267,6 @@ def estimate_anchor_aux_correlation(
         corr_d = np.zeros_like(corr_v)
     lam = float(np.clip(relation_value_weight, 0.0, 1.0))
     corr = (lam * corr_v + (1.0 - lam) * corr_d).astype(np.float32)
-
-    if use_dp:
-        flat = corr.ravel().astype(np.float32)
-        flat = clip_perturb_np(flat, C_g, sigma_g, rng)
-        corr = flat.reshape(corr.shape)
 
     return corr
 
@@ -586,15 +560,11 @@ class FedGAD:
             for k, c in enumerate(clients):
                 self.client_aux_corrs[k] = estimate_aux_correlation(
                     c["X_train"], cfg["n_anchor"],
-                    C_g=cfg["C_g"], sigma_g=cfg["sigma_g"],
-                    use_dp=False, rng=self.rng,
                     relation_value_weight=cfg.get("relation_value_weight", 0.5),
                 )
                 if cfg.get("use_data_driven_cross_block", False):
                     self.client_anchor_aux_corrs[k] = estimate_anchor_aux_correlation(
                         c["X_train"], cfg["n_anchor"],
-                        C_g=cfg["C_g"], sigma_g=cfg["sigma_g"],
-                        use_dp=False, rng=self.rng,
                         relation_value_weight=cfg.get("relation_value_weight", 0.5),
                     )
 

@@ -12,7 +12,7 @@ import torch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from fedgad_full import FedGAD
+from fedgad_full import FedGAD, estimate_anchor_aux_correlation, estimate_aux_correlation
 from src.fedhgf.calibration import QuantileCalibrator
 from src.fedhgf.data.normalization import TrainOnlyStandardizer
 from src.fedhgf.data.protocol_builder import build_hai_shared_context_protocol, to_model_clients
@@ -267,6 +267,23 @@ def test_dp_aggregator_is_simulated_and_records_server_visible_event():
     assumed = AssumedSecAggAggregator()
     assert assumed.backend == "assumed"
     assert torch.allclose(assumed.aggregate(messages), plain)
+
+
+def test_local_auxiliary_graphs_do_not_accept_dp_noise():
+    for fn in (estimate_aux_correlation, estimate_anchor_aux_correlation):
+        sig = inspect.signature(fn)
+        assert "use_dp" not in sig.parameters
+        assert "sigma_g" not in sig.parameters
+        assert "C_g" not in sig.parameters
+
+    rng = np.random.RandomState(7)
+    x = rng.normal(size=(8, 5, 4, 1)).astype(np.float32)
+    aux_a = estimate_aux_correlation(x, n_anchor=1)
+    aux_b = estimate_aux_correlation(x, n_anchor=1)
+    anchor_aux_a = estimate_anchor_aux_correlation(x, n_anchor=1)
+    anchor_aux_b = estimate_anchor_aux_correlation(x, n_anchor=1)
+    assert np.allclose(aux_a, aux_b)
+    assert np.allclose(anchor_aux_a, anchor_aux_b)
 
 
 if __name__ == "__main__":
